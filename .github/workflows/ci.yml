@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --all-groups --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+      - run: uv run pytest
+
+  deployment-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: |
+          kubectl kustomize deploy/kustomize/overlays/kind > /dev/null
+          kubectl kustomize deploy/kustomize/overlays/aws > /dev/null
+          kubectl kustomize deploy/kustomize/overlays/gcp > /dev/null
+          kubectl kustomize deploy/kustomize/overlays/azure > /dev/null
+      - run: ./scripts/validate-terraform.sh
+
+  image-and-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv lock --check
+      - run: docker build --tag rag-service:ci .
+      - run: ./scripts/integration-compose.sh
+      - uses: anchore/sbom-action@v0
+        with:
+          image: rag-service:ci
+          artifact-name: rag-service-sbom.spdx.json
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: rag-service:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
